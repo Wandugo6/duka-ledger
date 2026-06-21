@@ -1358,7 +1358,15 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
     const a = document.createElement("a");
     a.href = url;
     const filenameRange = rangeStart === rangeEnd ? rangeStart : `${rangeStart}_to_${rangeEnd}`;
-    a.download = `duka-ledger-${filenameRange}.csv`;
+    // Turn "Floress C4" into "floress-c4", "All locations" stays "all-shops"
+    const shopSlug =
+      shopFilter === "All"
+        ? "all-shops"
+        : shopFilter
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+    a.download = `duka-ledger-${shopSlug}-${filenameRange}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -1550,10 +1558,10 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
 
         {/* Per-shop breakdown (only when All selected) */}
         {shopFilter === "All" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginBottom: 20 }}>
-            <div style={{ ...card, padding: "12px 14px", borderColor: COLORS.clay }}>
-              <div style={{ fontSize: 12, color: COLORS.inkSoft, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
-                <Warehouse size={12} /> Warehouse
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 20 }}>
+            <div style={{ ...card, padding: "12px 14px", borderColor: COLORS.clay, minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: COLORS.inkSoft, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, overflowWrap: "break-word" }}>
+                <Warehouse size={12} style={{ flexShrink: 0 }} /> Warehouse
               </div>
               <div style={{ fontSize: 16, fontWeight: 800, marginTop: 2 }}>
                 +{warehouseIn} / -{warehouseOut}
@@ -1561,8 +1569,8 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
               <div style={{ fontSize: 11, color: COLORS.inkSoft }}>in / out, this range</div>
             </div>
             {byShop.map((b) => (
-              <div key={b.shop} style={{ ...card, padding: "12px 14px" }}>
-                <div style={{ fontSize: 12, color: COLORS.inkSoft, fontWeight: 700 }}>{b.shop}</div>
+              <div key={b.shop} style={{ ...card, padding: "12px 14px", minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: COLORS.inkSoft, fontWeight: 700, overflowWrap: "break-word", lineHeight: 1.3 }}>{b.shop}</div>
                 <div style={{ fontSize: 16, fontWeight: 800, marginTop: 2 }}>{fmtMoney(b.total)}</div>
                 <div style={{ fontSize: 11, color: COLORS.inkSoft }}>{b.count} sales</div>
               </div>
