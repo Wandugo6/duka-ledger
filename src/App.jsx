@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Store, Warehouse, TrendingUp, ArrowLeftRight, ClipboardList, Plus, X, ChevronDown, Lock, LogOut, Calendar, Trash2, Download, Truck, WifiOff } from "lucide-react";
+import { Store, Warehouse, TrendingUp, ArrowLeftRight, ClipboardList, Plus, X, ChevronDown, Lock, LogOut, Calendar, Trash2, Download, Truck, WifiOff, HandCoins, Undo2, CheckCircle2 } from "lucide-react";
 import {
   fetchSales,
   insertSale,
@@ -9,6 +9,13 @@ import {
   deleteTransfer as deleteTransferRow,
   getSetting,
   setSetting,
+  fetchDeposits,
+  insertDeposit,
+  settleDeposit as settleDepositRow,
+  deleteDeposit as deleteDepositRow,
+  fetchReturns,
+  insertReturn,
+  deleteReturn as deleteReturnRow,
   subscribeToChanges,
 } from "./dataStore";
 
@@ -88,6 +95,8 @@ export default function ShopTracker() {
 
   const [sales, setSales] = useState([]);
   const [transfers, setTransfers] = useState([]);
+  const [deposits, setDeposits] = useState([]);
+  const [returns, setReturns] = useState([]);
   const [ownerPin, setOwnerPin] = useState(null); // null while loading; "" means "not set yet"
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -103,9 +112,11 @@ export default function ShopTracker() {
 
   // ---- Load data from Supabase, then keep it live with realtime updates ----
   const reloadAll = useCallback(async () => {
-    const [s, t] = await Promise.all([fetchSales(), fetchTransfers()]);
+    const [s, t, d, r] = await Promise.all([fetchSales(), fetchTransfers(), fetchDeposits(), fetchReturns()]);
     setSales(s);
     setTransfers(t);
+    setDeposits(d);
+    setReturns(r);
   }, []);
 
   useEffect(() => {
@@ -179,6 +190,42 @@ export default function ShopTracker() {
     setTransfers((prev) => prev.filter((t) => t.id !== id));
     try {
       await deleteTransferRow(id);
+    } catch (e) {
+      console.error("delete failed", e);
+      reloadAll().catch(() => {});
+    }
+  }, [reloadAll]);
+
+  const addDepositEntry = useCallback(async (entry) => {
+    const saved = await insertDeposit(entry);
+    setDeposits((prev) => [saved, ...prev]);
+  }, []);
+
+  const settleDepositEntry = useCallback(async (deposit, settledEmployee) => {
+    const { deposit: updatedDeposit, sale } = await settleDepositRow(deposit, settledEmployee);
+    setDeposits((prev) => prev.map((d) => (d.id === updatedDeposit.id ? updatedDeposit : d)));
+    setSales((prev) => [sale, ...prev]);
+  }, []);
+
+  const removeDepositEntry = useCallback(async (id) => {
+    setDeposits((prev) => prev.filter((d) => d.id !== id));
+    try {
+      await deleteDepositRow(id);
+    } catch (e) {
+      console.error("delete failed", e);
+      reloadAll().catch(() => {});
+    }
+  }, [reloadAll]);
+
+  const addReturnEntry = useCallback(async (entry) => {
+    const saved = await insertReturn(entry);
+    setReturns((prev) => [saved, ...prev]);
+  }, []);
+
+  const removeReturnEntry = useCallback(async (id) => {
+    setReturns((prev) => prev.filter((r) => r.id !== id));
+    try {
+      await deleteReturnRow(id);
     } catch (e) {
       console.error("delete failed", e);
       reloadAll().catch(() => {});
@@ -313,10 +360,17 @@ export default function ShopTracker() {
         shop={shop}
         sales={sales}
         transfers={transfers}
+        deposits={deposits}
+        returns={returns}
         addSaleEntry={addSaleEntry}
         addTransferEntry={addTransferEntry}
         removeSaleEntry={removeSaleEntry}
         removeTransferEntry={removeTransferEntry}
+        addDepositEntry={addDepositEntry}
+        settleDepositEntry={settleDepositEntry}
+        removeDepositEntry={removeDepositEntry}
+        addReturnEntry={addReturnEntry}
+        removeReturnEntry={removeReturnEntry}
         isOffline={isOffline}
         onLogout={() => {
           setRole(null);
@@ -331,8 +385,12 @@ export default function ShopTracker() {
       <OwnerView
         sales={sales}
         transfers={transfers}
+        deposits={deposits}
+        returns={returns}
         removeSaleEntry={removeSaleEntry}
         removeTransferEntry={removeTransferEntry}
+        removeDepositEntry={removeDepositEntry}
+        removeReturnEntry={removeReturnEntry}
         rangeStart={ownerRangeStart}
         rangeEnd={ownerRangeEnd}
         setRangeStart={setOwnerRangeStart}
@@ -708,11 +766,14 @@ function SetPinScreen({ mode, onBack, onSave }) {
 }
 
 // ================= Employee View =================
-function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, removeSaleEntry, removeTransferEntry, isOffline, onLogout }) {
+function EmployeeView({ shop, sales, transfers, deposits, returns, addSaleEntry, addTransferEntry, removeSaleEntry, removeTransferEntry, addDepositEntry, settleDepositEntry, removeDepositEntry, addReturnEntry, removeReturnEntry, isOffline, onLogout }) {
   const isWarehouse = shop === WAREHOUSE;
   const [showSaleForm, setShowSaleForm] = useState(false);
   const [showTransferForm, setShowTransferForm] = useState(false);
   const [showEastleighForm, setShowEastleighForm] = useState(false);
+  const [showDepositForm, setShowDepositForm] = useState(false);
+  const [showReturnForm, setShowReturnForm] = useState(false);
+  const [settlingDeposit, setSettlingDeposit] = useState(null);
   const [saveError, setSaveError] = useState("");
 
   const today = todayStr();
@@ -720,6 +781,10 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
   const myTransfersToday = transfers.filter(
     (t) => (t.fromShop === shop || t.toShop === shop) && t.date === today
   );
+  const myReturnsToday = returns.filter((r) => r.shop === shop && r.date === today);
+  const myOpenDeposits = deposits
+    .filter((d) => d.shop === shop && d.status === "open")
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   const todayTotal = mySalesToday.reduce((sum, s) => sum + Number(s.amount || 0), 0);
 
   async function addSale(entry) {
@@ -745,6 +810,39 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
     }
   }
 
+  async function addDeposit(entry) {
+    setSaveError("");
+    try {
+      await addDepositEntry({ shop, date: today, ...entry });
+      setShowDepositForm(false);
+    } catch (e) {
+      console.error(e);
+      setSaveError("Couldn't save — check your connection and try again.");
+    }
+  }
+
+  async function addReturn(entry) {
+    setSaveError("");
+    try {
+      await addReturnEntry({ shop, date: today, ...entry });
+      setShowReturnForm(false);
+    } catch (e) {
+      console.error(e);
+      setSaveError("Couldn't save — check your connection and try again.");
+    }
+  }
+
+  async function handleSettle(deposit, settledEmployee) {
+    setSaveError("");
+    try {
+      await settleDepositEntry(deposit, settledEmployee);
+      setSettlingDeposit(null);
+    } catch (e) {
+      console.error(e);
+      setSaveError("Couldn't settle deposit — check your connection and try again.");
+    }
+  }
+
   async function deleteSale(id) {
     try {
       await removeSaleEntry(id);
@@ -756,6 +854,22 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
   async function deleteTransfer(id) {
     try {
       await removeTransferEntry(id);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function deleteDeposit(id) {
+    try {
+      await removeDepositEntry(id);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function deleteReturn(id) {
+    try {
+      await removeReturnEntry(id);
     } catch (e) {
       console.error(e);
     }
@@ -872,20 +986,56 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
             </button>
           </div>
         ) : (
-          <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-            <button
-              onClick={() => setShowSaleForm(true)}
-              style={{ ...btnPrimary, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-            >
-              <Plus size={17} /> Log a sale
-            </button>
-            <button
-              onClick={() => setShowTransferForm(true)}
-              style={{ ...btnGhost, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-            >
-              <ArrowLeftRight size={16} /> Stock move
-            </button>
-          </div>
+          <>
+            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+              <button
+                onClick={() => setShowSaleForm(true)}
+                style={{ ...btnPrimary, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+              >
+                <Plus size={17} /> Log a sale
+              </button>
+              <button
+                onClick={() => setShowTransferForm(true)}
+                style={{ ...btnGhost, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+              >
+                <ArrowLeftRight size={16} /> Stock move
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+              <button
+                onClick={() => setShowDepositForm(true)}
+                style={{ ...btnGhost, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+              >
+                <HandCoins size={16} /> Deposit
+              </button>
+              <button
+                onClick={() => setShowReturnForm(true)}
+                style={{ ...btnGhost, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+              >
+                <Undo2 size={16} /> Return
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Open deposits — these carry over across days until settled, so they
+            get their own section rather than living inside "today's entries" */}
+        {!isWarehouse && myOpenDeposits.length > 0 && (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
+              Open deposits ({myOpenDeposits.length})
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+              {myOpenDeposits.map((d) => (
+                <DepositRow
+                  key={d.id}
+                  deposit={d}
+                  onSettle={() => setSettlingDeposit(d)}
+                  onDelete={() => deleteDeposit(d.id)}
+                />
+              ))}
+            </div>
+          </>
         )}
 
         {/* Today's entries */}
@@ -893,7 +1043,7 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
           Today's entries
         </div>
 
-        {mySalesToday.length === 0 && myTransfersToday.length === 0 && (
+        {mySalesToday.length === 0 && myTransfersToday.length === 0 && myReturnsToday.length === 0 && (
           <div style={{ ...card, textAlign: "center", color: COLORS.inkSoft, fontSize: 14 }}>
             {isWarehouse
               ? "Nothing logged yet today. Record stock received from Eastleigh or stock sent to a shop."
@@ -902,15 +1052,21 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
         )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[...mySalesToday.map((s) => ({ ...s, _type: "sale" })), ...myTransfersToday.map((t) => ({ ...t, _type: "transfer" }))]
+          {[
+            ...mySalesToday.map((s) => ({ ...s, _type: "sale" })),
+            ...myTransfersToday.map((t) => ({ ...t, _type: "transfer" })),
+            ...myReturnsToday.map((r) => ({ ...r, _type: "return" })),
+          ]
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-            .map((item) =>
-              item._type === "sale" ? (
-                <SaleRow key={item.id} item={item} onDelete={() => deleteSale(item.id)} />
-              ) : (
-                <TransferRow key={item.id} item={item} shop={shop} onDelete={() => deleteTransfer(item.id)} />
-              )
-            )}
+            .map((item) => {
+              if (item._type === "sale") {
+                return <SaleRow key={item.id} item={item} onDelete={() => deleteSale(item.id)} />;
+              }
+              if (item._type === "transfer") {
+                return <TransferRow key={item.id} item={item} shop={shop} onDelete={() => deleteTransfer(item.id)} />;
+              }
+              return <ReturnRow key={item.id} item={item} onDelete={() => deleteReturn(item.id)} />;
+            })}
         </div>
       </div>
 
@@ -922,6 +1078,19 @@ function EmployeeView({ shop, sales, transfers, addSaleEntry, addTransferEntry, 
       )}
       {showEastleighForm && (
         <EastleighFormModal onClose={() => setShowEastleighForm(false)} onSubmit={addTransfer} />
+      )}
+      {showDepositForm && (
+        <DepositFormModal onClose={() => setShowDepositForm(false)} onSubmit={addDeposit} />
+      )}
+      {showReturnForm && (
+        <ReturnFormModal onClose={() => setShowReturnForm(false)} onSubmit={addReturn} />
+      )}
+      {settlingDeposit && (
+        <SettleDepositModal
+          deposit={settlingDeposit}
+          onClose={() => setSettlingDeposit(null)}
+          onSubmit={handleSettle}
+        />
       )}
     </div>
   );
@@ -985,6 +1154,82 @@ function TransferRow({ item, shop, onDelete }) {
           {outgoing ? "-" : "+"}
           {item.qty}
         </div>
+        <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.inkSoft, padding: 4 }}>
+          <Trash2 size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DepositRow({ deposit, onSettle, onDelete }) {
+  return (
+    <div style={{ ...card, padding: "12px 14px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: "#FFF3E0", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <HandCoins size={16} color={COLORS.clay} />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{deposit.item}</div>
+            <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+              {deposit.customer} · {fmtDateShort(deposit.date)} {deposit.employee ? `· ${deposit.employee}` : ""}
+            </div>
+          </div>
+        </div>
+        <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.inkSoft, padding: 4 }}>
+          <Trash2 size={15} />
+        </button>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${COLORS.rule}` }}>
+        <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+          Paid <strong style={{ color: COLORS.ink }}>{fmtMoney(deposit.amountPaid)}</strong> of {fmtMoney(deposit.fullPrice)}
+          {" · "}
+          <span style={{ color: COLORS.clayDark, fontWeight: 700 }}>{fmtMoney(deposit.balance)} owing</span>
+        </div>
+        <button
+          onClick={onSettle}
+          style={{
+            background: COLORS.green,
+            color: "#fff",
+            border: "none",
+            borderRadius: 8,
+            padding: "7px 12px",
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <CheckCircle2 size={14} /> Settle
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReturnRow({ item, onDelete }) {
+  const isRefund = item.returnType === "refunded";
+  return (
+    <div style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ width: 34, height: 34, borderRadius: 9, background: COLORS.redSoft, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Undo2 size={16} color={COLORS.clayDark} />
+        </div>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{item.item}</div>
+          <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+            {isRefund ? "Refunded" : `Exchanged for ${item.exchangedFor || "—"}`} · Qty {item.qty} · {fmtTime(item.createdAt)}{" "}
+            {item.employee ? `· ${item.employee}` : ""}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {isRefund && (
+          <div style={{ fontSize: 14, fontWeight: 800, color: COLORS.clayDark }}>-{fmtMoney(item.refundAmount)}</div>
+        )}
         <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.inkSoft, padding: 4 }}>
           <Trash2 size={15} />
         </button>
@@ -1273,9 +1518,288 @@ function EastleighFormModal({ onClose, onSubmit }) {
   );
 }
 
+function DepositFormModal({ onClose, onSubmit }) {
+  const [item, setItem] = useState("");
+  const [customer, setCustomer] = useState("");
+  const [fullPrice, setFullPrice] = useState("");
+  const [amountPaid, setAmountPaid] = useState("");
+  const [employee, setEmployee] = useState("");
+  const [triedSave, setTriedSave] = useState(false);
+
+  const nameValid = employee.trim().length > 0;
+  const customerValid = customer.trim().length > 0;
+  const priceValid = fullPrice && Number(fullPrice) > 0;
+  const paidValid = amountPaid && Number(amountPaid) > 0 && Number(amountPaid) <= Number(fullPrice || 0);
+  const valid = item.trim() && customerValid && priceValid && paidValid && nameValid;
+
+  const balance = priceValid && amountPaid ? Math.max(0, Number(fullPrice) - Number(amountPaid)) : null;
+
+  function submit() {
+    setTriedSave(true);
+    if (!valid) return;
+    onSubmit({
+      item: item.trim(),
+      customer: customer.trim(),
+      fullPrice: Number(fullPrice),
+      amountPaid: Number(amountPaid),
+      employee: employee.trim(),
+    });
+  }
+
+  return (
+    <ModalShell title="Record a deposit" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ fontSize: 13, color: COLORS.inkSoft, background: "#FFF3E0", padding: "10px 12px", borderRadius: 8 }}>
+          This won't count as a sale yet. It becomes a completed sale once the customer pays the rest and you mark it settled.
+        </div>
+
+        <div>
+          <label style={label}>Item</label>
+          <input style={inputStyle} value={item} onChange={(e) => setItem(e.target.value)} placeholder="e.g. Men's denim jacket" autoFocus />
+        </div>
+
+        <div>
+          <label style={{ ...label, color: triedSave && !customerValid ? COLORS.clayDark : label.color }}>
+            Customer name {triedSave && !customerValid ? "— required" : ""}
+          </label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${triedSave && !customerValid ? COLORS.clayDark : COLORS.rule}` }}
+            value={customer}
+            onChange={(e) => setCustomer(e.target.value)}
+            placeholder="So you can find this later"
+          />
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={label}>Full price (KSh)</label>
+            <input style={inputStyle} type="number" min="0" value={fullPrice} onChange={(e) => setFullPrice(e.target.value)} placeholder="0" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={label}>Paid today (KSh)</label>
+            <input style={inputStyle} type="number" min="0" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} placeholder="0" />
+          </div>
+        </div>
+
+        {balance !== null && (
+          <div style={{ fontSize: 13, color: COLORS.inkSoft }}>
+            Balance owing: <strong style={{ color: COLORS.clayDark }}>{fmtMoney(balance)}</strong>
+          </div>
+        )}
+        {triedSave && amountPaid && fullPrice && Number(amountPaid) > Number(fullPrice) && (
+          <div style={{ fontSize: 13, color: COLORS.clayDark }}>Amount paid can't be more than the full price.</div>
+        )}
+
+        <div>
+          <label style={{ ...label, color: triedSave && !nameValid ? COLORS.clayDark : label.color }}>
+            Your name {triedSave && !nameValid ? "— required" : ""}
+          </label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${triedSave && !nameValid ? COLORS.clayDark : COLORS.rule}` }}
+            value={employee}
+            onChange={(e) => setEmployee(e.target.value)}
+            placeholder="e.g. Faith"
+          />
+        </div>
+
+        <button style={{ ...btnPrimary, opacity: valid ? 1 : 0.6, marginTop: 4 }} onClick={submit}>
+          Save deposit
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function SettleDepositModal({ deposit, onClose, onSubmit }) {
+  const [employee, setEmployee] = useState("");
+  const [triedSave, setTriedSave] = useState(false);
+
+  const nameValid = employee.trim().length > 0;
+
+  function submit() {
+    setTriedSave(true);
+    if (!nameValid) return;
+    onSubmit(deposit, employee.trim());
+  }
+
+  return (
+    <ModalShell title="Settle deposit" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ ...card, padding: "12px 14px" }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{deposit.item}</div>
+          <div style={{ fontSize: 12, color: COLORS.inkSoft, marginTop: 2 }}>{deposit.customer}</div>
+          <div style={{ fontSize: 13, color: COLORS.inkSoft, marginTop: 8 }}>
+            Already paid <strong style={{ color: COLORS.ink }}>{fmtMoney(deposit.amountPaid)}</strong> of {fmtMoney(deposit.fullPrice)}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: COLORS.clayDark, marginTop: 4 }}>
+            Balance to collect now: {fmtMoney(deposit.balance)}
+          </div>
+        </div>
+
+        <div style={{ fontSize: 13, color: COLORS.inkSoft }}>
+          Confirming this means the customer has paid the remaining balance. The full price of{" "}
+          <strong>{fmtMoney(deposit.fullPrice)}</strong> will be recorded as a sale today.
+        </div>
+
+        <div>
+          <label style={{ ...label, color: triedSave && !nameValid ? COLORS.clayDark : label.color }}>
+            Your name {triedSave && !nameValid ? "— required" : ""}
+          </label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${triedSave && !nameValid ? COLORS.clayDark : COLORS.rule}` }}
+            value={employee}
+            onChange={(e) => setEmployee(e.target.value)}
+            placeholder="e.g. Faith"
+            autoFocus
+          />
+        </div>
+
+        <button style={{ ...btnPrimary, background: COLORS.green, opacity: nameValid ? 1 : 0.6, marginTop: 4 }} onClick={submit}>
+          Confirm balance paid — complete sale
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ReturnFormModal({ onClose, onSubmit }) {
+  const [item, setItem] = useState("");
+  const [qty, setQty] = useState("1");
+  const [returnType, setReturnType] = useState("refunded"); // refunded | exchanged
+  const [refundAmount, setRefundAmount] = useState("");
+  const [exchangedFor, setExchangedFor] = useState("");
+  const [employee, setEmployee] = useState("");
+  const [note, setNote] = useState("");
+  const [triedSave, setTriedSave] = useState(false);
+
+  const nameValid = employee.trim().length > 0;
+  const refundValid = returnType !== "refunded" || (refundAmount && Number(refundAmount) > 0);
+  const exchangeValid = returnType !== "exchanged" || exchangedFor.trim().length > 0;
+  const valid = item.trim() && qty && Number(qty) > 0 && nameValid && refundValid && exchangeValid;
+
+  function submit() {
+    setTriedSave(true);
+    if (!valid) return;
+    onSubmit({
+      item: item.trim(),
+      qty: Number(qty),
+      returnType,
+      refundAmount: returnType === "refunded" ? Number(refundAmount) : 0,
+      exchangedFor: returnType === "exchanged" ? exchangedFor.trim() : "",
+      employee: employee.trim(),
+      note: note.trim(),
+    });
+  }
+
+  return (
+    <ModalShell title="Record a return" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div>
+          <label style={label}>Item returned</label>
+          <input style={inputStyle} value={item} onChange={(e) => setItem(e.target.value)} placeholder="e.g. Men's denim jacket" autoFocus />
+        </div>
+
+        <div>
+          <label style={label}>Quantity</label>
+          <input style={inputStyle} type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} />
+        </div>
+
+        <div>
+          <label style={label}>What happened?</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => setReturnType("refunded")}
+              style={{
+                flex: 1,
+                padding: "11px 10px",
+                borderRadius: 10,
+                border: `1px solid ${returnType === "refunded" ? COLORS.clay : COLORS.rule}`,
+                background: returnType === "refunded" ? COLORS.redSoft : "#FCFAF6",
+                color: COLORS.ink,
+                fontWeight: 700,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Refunded
+            </button>
+            <button
+              onClick={() => setReturnType("exchanged")}
+              style={{
+                flex: 1,
+                padding: "11px 10px",
+                borderRadius: 10,
+                border: `1px solid ${returnType === "exchanged" ? COLORS.green : COLORS.rule}`,
+                background: returnType === "exchanged" ? COLORS.greenSoft : "#FCFAF6",
+                color: COLORS.ink,
+                fontWeight: 700,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Exchanged
+            </button>
+          </div>
+        </div>
+
+        {returnType === "refunded" && (
+          <div>
+            <label style={{ ...label, color: triedSave && !refundValid ? COLORS.clayDark : label.color }}>
+              Amount refunded (KSh) {triedSave && !refundValid ? "— required" : ""}
+            </label>
+            <input
+              style={{ ...inputStyle, border: `1px solid ${triedSave && !refundValid ? COLORS.clayDark : COLORS.rule}` }}
+              type="number"
+              min="0"
+              value={refundAmount}
+              onChange={(e) => setRefundAmount(e.target.value)}
+              placeholder="0"
+            />
+          </div>
+        )}
+
+        {returnType === "exchanged" && (
+          <div>
+            <label style={{ ...label, color: triedSave && !exchangeValid ? COLORS.clayDark : label.color }}>
+              Exchanged for {triedSave && !exchangeValid ? "— required" : ""}
+            </label>
+            <input
+              style={{ ...inputStyle, border: `1px solid ${triedSave && !exchangeValid ? COLORS.clayDark : COLORS.rule}` }}
+              value={exchangedFor}
+              onChange={(e) => setExchangedFor(e.target.value)}
+              placeholder="e.g. Different size, same item"
+            />
+          </div>
+        )}
+
+        <div>
+          <label style={{ ...label, color: triedSave && !nameValid ? COLORS.clayDark : label.color }}>
+            Your name {triedSave && !nameValid ? "— required" : ""}
+          </label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${triedSave && !nameValid ? COLORS.clayDark : COLORS.rule}` }}
+            value={employee}
+            onChange={(e) => setEmployee(e.target.value)}
+            placeholder="e.g. Faith"
+          />
+        </div>
+
+        <div>
+          <label style={label}>Note (optional)</label>
+          <input style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Reason for return, condition, etc." />
+        </div>
+
+        <button style={{ ...btnPrimary, opacity: valid ? 1 : 0.6, marginTop: 4 }} onClick={submit}>
+          Save return
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 // ================= Owner View =================
-function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, rangeStart, rangeEnd, setRangeStart, setRangeEnd, shopFilter, setShopFilter, isOffline, onLogout, onChangePin }) {
-  const [tab, setTab] = useState("overview"); // overview | sales | transfers
+function OwnerView({ sales, transfers, deposits, returns, removeSaleEntry, removeTransferEntry, removeDepositEntry, removeReturnEntry, rangeStart, rangeEnd, setRangeStart, setRangeEnd, shopFilter, setShopFilter, isOffline, onLogout, onChangePin }) {
+  const [tab, setTab] = useState("overview"); // overview | sales | transfers | deposits | returns
   const [activePreset, setActivePreset] = useState("today");
 
   function inRange(dateStr) {
@@ -1317,6 +1841,24 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
       inRange(t.date) &&
       (shopFilter === "All" || t.fromShop === shopFilter || t.toShop === shopFilter)
   );
+  const filteredDeposits = deposits.filter(
+    (d) => inRange(d.date) && (shopFilter === "All" || d.shop === shopFilter)
+  );
+  const filteredReturns = returns.filter(
+    (r) => inRange(r.date) && (shopFilter === "All" || r.shop === shopFilter)
+  );
+
+  // Open deposits owing isn't date-filtered by the selected range — it's a
+  // running "how much is currently owed to me" figure, across whichever
+  // shop(s) are selected, regardless of when each deposit was first taken.
+  const openDepositsForShop = deposits.filter(
+    (d) => d.status === "open" && (shopFilter === "All" || d.shop === shopFilter)
+  );
+  const totalOwing = openDepositsForShop.reduce((sum, d) => sum + Number(d.balance || 0), 0);
+
+  const totalRefunds = filteredReturns
+    .filter((r) => r.returnType === "refunded")
+    .reduce((sum, r) => sum + Number(r.refundAmount || 0), 0);
 
   const totalInRange = filteredSales.reduce((sum, s) => sum + Number(s.amount || 0), 0);
 
@@ -1352,6 +1894,42 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
       .forEach((t) =>
         rows.push(["Transfer", t.date, fmtTime(t.createdAt), "", t.fromShop, t.toShop, t.item, t.qty, "", t.employee, ""])
       );
+    filteredDeposits
+      .slice()
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+      .forEach((d) =>
+        rows.push([
+          d.status === "settled" ? "Deposit (settled)" : "Deposit (open)",
+          d.date,
+          fmtTime(d.createdAt),
+          d.shop,
+          "",
+          "",
+          d.item,
+          1,
+          d.amountPaid,
+          d.employee,
+          `Customer: ${d.customer}; full price ${d.fullPrice}; balance ${d.balance}`,
+        ])
+      );
+    filteredReturns
+      .slice()
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+      .forEach((r) =>
+        rows.push([
+          r.returnType === "refunded" ? "Return (refunded)" : "Return (exchanged)",
+          r.date,
+          fmtTime(r.createdAt),
+          r.shop,
+          "",
+          "",
+          r.item,
+          r.qty,
+          r.returnType === "refunded" ? -Math.abs(r.refundAmount) : "",
+          r.employee,
+          r.returnType === "exchanged" ? `Exchanged for: ${r.exchangedFor}` : r.note || "",
+        ])
+      );
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -1381,6 +1959,20 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
   async function deleteTransfer(id) {
     try {
       await removeTransferEntry(id);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  async function deleteDeposit(id) {
+    try {
+      await removeDepositEntry(id);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  async function deleteReturn(id) {
+    try {
+      await removeReturnEntry(id);
     } catch (e) {
       console.error(e);
     }
@@ -1553,8 +2145,26 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
           <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>
             {filteredSales.length} sale{filteredSales.length !== 1 ? "s" : ""} · {filteredTransfers.length} stock movement
             {filteredTransfers.length !== 1 ? "s" : ""}
+            {totalRefunds > 0 ? ` · ${fmtMoney(totalRefunds)} refunded` : ""}
           </div>
         </div>
+
+        {totalOwing > 0 && (
+          <div style={{ ...card, marginBottom: 16, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 9, background: "#FFF3E0", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <HandCoins size={16} color={COLORS.clay} />
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>Owed from open deposits</div>
+                <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+                  {openDepositsForShop.length} open · {shopFilter === "All" ? "all shops" : shopFilter}
+                </div>
+              </div>
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.clayDark }}>{fmtMoney(totalOwing)}</div>
+          </div>
+        )}
 
         {/* Per-shop breakdown (only when All selected) */}
         {shopFilter === "All" && (
@@ -1579,10 +2189,12 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
         )}
 
         {/* Tabs */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: `1px solid ${COLORS.rule}` }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, borderBottom: `1px solid ${COLORS.rule}`, flexWrap: "wrap" }}>
           {[
             { id: "sales", label: `Sales (${filteredSales.length})` },
             { id: "transfers", label: `Stock movements (${filteredTransfers.length})` },
+            { id: "deposits", label: `Deposits (${filteredDeposits.length})` },
+            { id: "returns", label: `Returns (${filteredReturns.length})` },
           ].map((t) => (
             <button
               key={t.id}
@@ -1653,6 +2265,94 @@ function OwnerView({ sales, transfers, removeSaleEntry, removeTransferEntry, ran
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ fontSize: 14, fontWeight: 800 }}>Qty {t.qty}</div>
                     <button onClick={() => deleteTransfer(t.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.inkSoft, padding: 4 }}>
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
+
+        {tab === "deposits" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filteredDeposits.length === 0 && (
+              <div style={{ ...card, textAlign: "center", color: COLORS.inkSoft, fontSize: 14 }}>
+                No deposits for this filter.
+              </div>
+            )}
+            {filteredDeposits
+              .slice()
+              .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+              .map((d) => (
+                <div key={d.id} style={{ ...card, padding: "12px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>{d.item}</div>
+                      <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+                        {d.shop} · {d.customer} · {fmtDateShort(d.date)} {d.employee ? `· ${d.employee}` : ""}
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        padding: "4px 8px",
+                        borderRadius: 6,
+                        background: d.status === "settled" ? COLORS.greenSoft : "#FFF3E0",
+                        color: d.status === "settled" ? COLORS.green : COLORS.clayDark,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {d.status === "settled" ? "Settled" : "Open"}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${COLORS.rule}` }}>
+                    <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+                      Paid <strong style={{ color: COLORS.ink }}>{fmtMoney(d.amountPaid)}</strong> of {fmtMoney(d.fullPrice)}
+                      {d.status === "open" && (
+                        <>
+                          {" · "}
+                          <span style={{ color: COLORS.clayDark, fontWeight: 700 }}>{fmtMoney(d.balance)} owing</span>
+                        </>
+                      )}
+                      {d.status === "settled" && d.settledEmployee && (
+                        <> · settled by {d.settledEmployee}</>
+                      )}
+                    </div>
+                    <button onClick={() => deleteDeposit(d.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.inkSoft, padding: 4 }}>
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
+
+        {tab === "returns" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filteredReturns.length === 0 && (
+              <div style={{ ...card, textAlign: "center", color: COLORS.inkSoft, fontSize: 14 }}>
+                No returns for this filter.
+              </div>
+            )}
+            {filteredReturns
+              .slice()
+              .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+              .map((r) => (
+                <div key={r.id} style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px" }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{r.item}</div>
+                    <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+                      {r.shop} · {r.returnType === "refunded" ? "Refunded" : `Exchanged for ${r.exchangedFor || "—"}`} · Qty {r.qty} ·{" "}
+                      {fmtDateShort(r.date)} {r.employee ? `· ${r.employee}` : ""}
+                      {r.note ? ` · ${r.note}` : ""}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {r.returnType === "refunded" && (
+                      <div style={{ fontSize: 14, fontWeight: 800, color: COLORS.clayDark }}>-{fmtMoney(r.refundAmount)}</div>
+                    )}
+                    <button onClick={() => deleteReturn(r.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.inkSoft, padding: 4 }}>
                       <Trash2 size={15} />
                     </button>
                   </div>
