@@ -1,0 +1,14 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="96" fill="#B6562F"/>
+  <g transform="translate(256,256)">
+    <!-- simple storefront glyph -->
+    <rect x="-130" y="-20" width="260" height="170" rx="12" fill="#FFFFFF"/>
+    <rect x="-130" y="-90" width="260" height="80" rx="16" fill="#F6F2EA"/>
+    <rect x="-150" y="-100" width="60" height="90" rx="10" fill="#94431F"/>
+    <rect x="-80" y="-100" width="60" height="90" rx="10" fill="#FFFFFF"/>
+    <rect x="-10" y="-100" width="60" height="90" rx="10" fill="#94431F"/>
+    <rect x="60" y="-100" width="60" height="90" rx="10" fill="#FFFFFF"/>
+    <rect x="-40" y="40" width="80" height="110" rx="8" fill="#B6562F"/>
+    <circle cx="25" cy="95" r="6" fill="#F6F2EA"/>
+  </g>
+</svg>
